@@ -1,0 +1,39 @@
+{
+  "name": "realtime-server",
+  "version": "1.0.0",
+  "description": "Standalone real-time server for WebSocket connections and PostgreSQL notifications",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "build:docker": "docker-compose down && docker-compose up --build -d",
+    "health-check": "curl -f http://localhost:${REALTIME_PORT:-3001}/health || exit 1"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "pg": "^8.16.3",
+    "dotenv": "^17.2.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.6.2",
+    "@types/pg": "^8.15.4",
+    "@types/cors": "^2.8.17",
+    "typescript": "^5.2.2",
+    "tsx": "^4.19.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "websocket",
+    "socket.io",
+    "realtime",
+    "postgresql",
+    "notifications"
+  ],
+  "author": "",
+  "license": "MIT"
+}

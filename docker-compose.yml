@@ -1,0 +1,19 @@
+services:
+  realtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: karimkhaledel/ecommerce-realtime:latest
+    platform: linux/amd64
+    container_name: ecommerce-realtime-container
+    restart: unless-stopped
+    ports:
+      - "${REALTIME_PORT:-3001}:3001"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "/health-check.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
