@@ -49,10 +49,9 @@ COPY --from=deps /app/package.json ./package.json
 # Copy built application
 COPY --from=builder /app/dist ./dist
 
-# Create health check script
-RUN echo '#!/bin/sh' > /health-check.sh && \
-    echo 'curl -f http://localhost:${REALTIME_PORT:-3001}/health >/dev/null 2>&1 || exit 1' >> /health-check.sh && \
-    chmod +x /health-check.sh
+# Copy health check script
+COPY health-check.sh /health-check.sh
+RUN chmod +x /health-check.sh
 
 # Create non-root user for security
 RUN groupadd -r realtime && useradd -r -g realtime realtime
