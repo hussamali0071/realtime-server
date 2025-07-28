@@ -12,6 +12,9 @@ export class RealtimeServer {
   private pgClient: Client;
   private httpServer: any;
   private connectedClients = new Map<string, any>();
+  private keepaliveInterval: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 10;
 
   constructor() {
     // Create HTTP server for Socket.IO with enhanced endpoints
@@ -87,9 +90,12 @@ export class RealtimeServer {
       pingInterval: 25000,
     });
 
-    // Initialize PostgreSQL client for NOTIFY/LISTEN
+    // Initialize PostgreSQL client for NOTIFY/LISTEN with keepalive settings
     this.pgClient = new Client({
       connectionString: process.env.DATABASE_URL,
+      // Enable TCP keepalive to prevent idle connection drops
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000, // 10 seconds
     });
 
     this.setupSocketHandlers();
@@ -170,11 +176,17 @@ export class RealtimeServer {
       await this.pgClient.connect();
       console.log("📡 Connected to PostgreSQL for real-time notifications");
 
+      // Reset reconnect attempts on successful connection
+      this.reconnectAttempts = 0;
+
       // Listen to all our notification channels
       await this.pgClient.query("LISTEN conversion_message_changes");
       await this.pgClient.query("LISTEN conversion_changes");
       await this.pgClient.query("LISTEN conversion_step_changes");
       await this.pgClient.query("LISTEN test_channel");
+
+      // Start keepalive mechanism to prevent idle timeouts
+      this.startKeepalive();
 
       // Handle notifications from PostgreSQL
       this.pgClient.on("notification", (msg) => {
@@ -197,13 +209,56 @@ export class RealtimeServer {
       // Handle PostgreSQL connection errors
       this.pgClient.on("error", (err) => {
         console.error("❌ PostgreSQL notification client error:", err);
+        this.stopKeepalive();
         // Attempt to reconnect
         this.reconnectPg();
       });
+
+      // Handle unexpected connection termination
+      this.pgClient.on("end", () => {
+        console.log("📡 PostgreSQL connection ended");
+        this.stopKeepalive();
+      });
     } catch (error) {
       console.error("❌ Failed to setup PostgreSQL notifications:", error);
-      // Retry connection after delay
-      setTimeout(() => this.setupPgNotifications(), 5000);
+      this.reconnectAttempts++;
+
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        const delay = Math.min(5000 * this.reconnectAttempts, 30000); // Exponential backoff, max 30s
+        console.log(
+          `⏰ Retrying connection in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+        );
+        setTimeout(() => this.setupPgNotifications(), delay);
+      } else {
+        console.error(
+          "❌ Max reconnection attempts reached. Manual intervention required."
+        );
+      }
+    }
+  }
+
+  private startKeepalive() {
+    // Clear any existing keepalive
+    this.stopKeepalive();
+
+    // Send a simple query every 5 minutes to keep connection alive
+    this.keepaliveInterval = setInterval(async () => {
+      try {
+        await this.pgClient.query("SELECT 1");
+        console.log("💓 PostgreSQL keepalive ping successful");
+      } catch (error) {
+        console.error("❌ PostgreSQL keepalive failed:", error);
+        // Connection might be dead, trigger reconnection
+        this.stopKeepalive();
+        this.reconnectPg();
+      }
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  private stopKeepalive() {
+    if (this.keepaliveInterval) {
+      clearInterval(this.keepaliveInterval);
+      this.keepaliveInterval = null;
     }
   }
 
@@ -299,15 +354,40 @@ export class RealtimeServer {
   private async reconnectPg() {
     try {
       console.log("🔄 Attempting to reconnect to PostgreSQL...");
-      await this.pgClient.end();
+
+      // Stop keepalive before ending connection
+      this.stopKeepalive();
+
+      // Safely end the current connection
+      try {
+        await this.pgClient.end();
+      } catch (endError) {
+        console.log("⚠️ Connection was already closed or in bad state");
+      }
+
+      // Create new client with keepalive settings
       this.pgClient = new Client({
         connectionString: process.env.DATABASE_URL,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       });
+
       await this.setupPgNotifications();
     } catch (error) {
       console.error("❌ Failed to reconnect to PostgreSQL:", error);
-      // Retry after 5 seconds
-      setTimeout(() => this.reconnectPg(), 5000);
+      this.reconnectAttempts++;
+
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        const delay = Math.min(5000 * this.reconnectAttempts, 30000);
+        console.log(
+          `⏰ Retrying reconnection in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+        );
+        setTimeout(() => this.reconnectPg(), delay);
+      } else {
+        console.error(
+          "❌ Max reconnection attempts reached. PostgreSQL notifications disabled."
+        );
+      }
     }
   }
 
@@ -384,8 +464,15 @@ export class RealtimeServer {
   public async close() {
     console.log("🛑 Shutting down realtime server...");
     try {
+      // Stop keepalive mechanism
+      this.stopKeepalive();
+
+      // Close PostgreSQL connection
       await this.pgClient.end();
+
+      // Close HTTP server
       this.httpServer.close();
+
       console.log("✅ Realtime server shutdown complete");
     } catch (error) {
       console.error("❌ Error during shutdown:", error);
